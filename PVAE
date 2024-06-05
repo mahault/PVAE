@@ -1,0 +1,387 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "colab": {
+      "provenance": [],
+      "gpuType": "T4",
+      "authorship_tag": "ABX9TyPClE5Ie/vmHiA8ux1GfWTv",
+      "include_colab_link": true
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    },
+    "language_info": {
+      "name": "python"
+    },
+    "accelerator": "GPU"
+  },
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/mahault/PVAE/blob/main/PVAE\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "PVAE model"
+      ],
+      "metadata": {
+        "id": "np_Mqbiu67_G"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import torch\n",
+        "import torch.nn as nn\n",
+        "import torch.nn.functional as F\n",
+        "\n",
+        "class PVAE(nn.Module):\n",
+        "    def __init__(self, input_dim, latent_dim):\n",
+        "        super(PVAE, self).__init__()\n",
+        "        self.fc1 = nn.Linear(input_dim, 400)\n",
+        "        self.fc21 = nn.Linear(400, latent_dim)  # Rate (lambda)\n",
+        "        self.fc3 = nn.Linear(latent_dim, 400)\n",
+        "        self.fc4 = nn.Linear(400, input_dim)\n",
+        "\n",
+        "    def encode(self, x):\n",
+        "        h1 = F.relu(self.fc1(x))\n",
+        "        return F.softplus(self.fc21(h1))  # Ensures positive rates\n",
+        "\n",
+        "    def reparameterize(self, rate):\n",
+        "        # Poisson reparameterization trick\n",
+        "        eps = torch.randn_like(rate)\n",
+        "        rate = torch.clamp(rate + eps * torch.sqrt(rate), min=1e-10)  # Ensure non-negative rates\n",
+        "        return torch.poisson(rate)\n",
+        "\n",
+        "    def decode(self, z):\n",
+        "        h3 = F.relu(self.fc3(z))\n",
+        "        return torch.sigmoid(self.fc4(h3))\n",
+        "\n",
+        "    def forward(self, x):\n",
+        "        rate = self.encode(x)\n",
+        "        z = self.reparameterize(rate)\n",
+        "        return self.decode(z), rate\n",
+        "\n",
+        "def loss_function(recon_x, x, rate):\n",
+        "    BCE = F.binary_cross_entropy(recon_x, x, reduction='sum')\n",
+        "    KL = torch.sum(rate - torch.log(rate) + rate * torch.log(rate) - rate)\n",
+        "    return BCE + KL\n"
+      ],
+      "metadata": {
+        "id": "ipMFle5266u5"
+      },
+      "execution_count": 1,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Generate images"
+      ],
+      "metadata": {
+        "id": "sdRtaEts6W7j"
+      }
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 2,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "Rc0kUVVn6R3U",
+        "outputId": "6aa5b30a-a2f4-472c-aa1a-39df0efa6ff5"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Dataset created and saved as shapes_dataset.npz\n"
+          ]
+        }
+      ],
+      "source": [
+        "import numpy as np\n",
+        "import matplotlib.pyplot as plt\n",
+        "from sklearn.model_selection import train_test_split\n",
+        "from PIL import Image, ImageDraw\n",
+        "\n",
+        "def create_shape_image(shape, size=28):\n",
+        "    image = Image.new('L', (size, size), 0)  # Create a blank image\n",
+        "    draw = ImageDraw.Draw(image)\n",
+        "\n",
+        "    if shape == 'circle':\n",
+        "        draw.ellipse((4, 4, size-4, size-4), fill=255)\n",
+        "    elif shape == 'square':\n",
+        "        draw.rectangle((4, 4, size-4, size-4), fill=255)\n",
+        "    elif shape == 'triangle':\n",
+        "        draw.polygon([(size/2, 4), (4, size-4), (size-4, size-4)], fill=255)\n",
+        "\n",
+        "    return np.array(image)\n",
+        "\n",
+        "def create_dataset(num_samples=1000, size=28):\n",
+        "    shapes = ['circle', 'square', 'triangle']\n",
+        "    images = []\n",
+        "    labels = []\n",
+        "\n",
+        "    for _ in range(num_samples):\n",
+        "        shape = np.random.choice(shapes)\n",
+        "        image = create_shape_image(shape, size)\n",
+        "        images.append(image)\n",
+        "        labels.append(shapes.index(shape))\n",
+        "\n",
+        "    images = np.array(images)\n",
+        "    labels = np.array(labels)\n",
+        "\n",
+        "    # Normalize pixel values to [0, 1]\n",
+        "    images = images / 255.0\n",
+        "\n",
+        "    return train_test_split(images, labels, test_size=0.2, random_state=42)\n",
+        "\n",
+        "# Create the dataset\n",
+        "X_train, X_test, y_train, y_test = create_dataset(num_samples=100000, size=28)\n",
+        "\n",
+        "# Save the dataset\n",
+        "np.savez('shapes_dataset.npz', X_train=X_train, X_test=X_test, y_train=y_train, y_test=y_test)\n",
+        "\n",
+        "print(\"Dataset created and saved as shapes_dataset.npz\")\n"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Loading and Using the Dataset"
+      ],
+      "metadata": {
+        "id": "ckJFc9MU6faN"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import numpy as np\n",
+        "import torch\n",
+        "from torch.utils.data import DataLoader, TensorDataset\n",
+        "\n",
+        "# Load the dataset\n",
+        "data = np.load('shapes_dataset.npz')\n",
+        "X_train, X_test = data['X_train'], data['X_test']\n",
+        "\n",
+        "# Convert to PyTorch tensors\n",
+        "X_train_tensor = torch.tensor(X_train, dtype=torch.float32).unsqueeze(1)\n",
+        "X_test_tensor = torch.tensor(X_test, dtype=torch.float32).unsqueeze(1)\n",
+        "\n",
+        "# Create DataLoader\n",
+        "batch_size = 64\n",
+        "train_loader = DataLoader(TensorDataset(X_train_tensor, X_train_tensor), batch_size=batch_size, shuffle=True)\n",
+        "test_loader = DataLoader(TensorDataset(X_test_tensor, X_test_tensor), batch_size=batch_size, shuffle=False)\n",
+        "\n",
+        "# Verify the DataLoader\n",
+        "for batch in train_loader:\n",
+        "    print(batch[0].shape)  # Should print: torch.Size([batch_size, 1, 28, 28])\n",
+        "    break"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "-2b7BmkC6ZLY",
+        "outputId": "5982244d-766b-4bb2-b5b7-52449bf58f60"
+      },
+      "execution_count": 3,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "torch.Size([64, 1, 28, 28])\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Running P-VAE on the Dataset"
+      ],
+      "metadata": {
+        "id": "v82r4QrF6jo2"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import torch.optim as optim\n",
+        "\n",
+        "# Initialize the model, optimizer, and loss function\n",
+        "input_dim = 28 * 28  # Flatten the images\n",
+        "latent_dim = 10\n",
+        "model = PVAE(input_dim=input_dim, latent_dim=latent_dim)\n",
+        "optimizer = optim.Adam(model.parameters(), lr=1e-3)\n",
+        "\n",
+        "# Training loop\n",
+        "num_epochs = 100\n",
+        "\n",
+        "for epoch in range(num_epochs):\n",
+        "    model.train()\n",
+        "    train_loss = 0\n",
+        "    for batch_idx, (data, _) in enumerate(train_loader):\n",
+        "        data = data.view(-1, input_dim)\n",
+        "        optimizer.zero_grad()\n",
+        "        recon_batch, rate = model(data)\n",
+        "        loss = loss_function(recon_batch, data, rate)\n",
+        "        loss.backward()\n",
+        "        train_loss += loss.item()\n",
+        "        optimizer.step()\n",
+        "\n",
+        "    print(f'Epoch {epoch+1}, Loss: {train_loss / len(train_loader.dataset)}')\n",
+        "\n",
+        "# Evaluation\n",
+        "model.eval()\n",
+        "test_loss = 0\n",
+        "with torch.no_grad():\n",
+        "    for data, _ in test_loader:\n",
+        "        data = data.view(-1, input_dim)\n",
+        "        recon_batch, rate = model(data)\n",
+        "        test_loss += loss_function(recon_batch, data, rate).item()\n",
+        "\n",
+        "print(f'Test Loss: {test_loss / len(test_loader.dataset)}')"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "7ZSaMHVq6igs",
+        "outputId": "25594637-3829-4388-cabc-cf940a93c01e"
+      },
+      "execution_count": null,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "Epoch 1, Loss: 163.73977801513672\n",
+            "Epoch 2, Loss: 159.98922192382813\n",
+            "Epoch 3, Loss: 159.5239967529297\n",
+            "Epoch 4, Loss: 159.38616217041016\n",
+            "Epoch 5, Loss: 159.2917764892578\n",
+            "Epoch 6, Loss: 159.24564692382813\n",
+            "Epoch 7, Loss: 159.2196879638672\n",
+            "Epoch 8, Loss: 159.1994489013672\n",
+            "Epoch 9, Loss: 159.2017956665039\n",
+            "Epoch 10, Loss: 159.18199119873046\n",
+            "Epoch 11, Loss: 159.1787465209961\n",
+            "Epoch 12, Loss: 159.15594024658202\n",
+            "Epoch 13, Loss: 159.158901953125\n",
+            "Epoch 14, Loss: 159.1691462890625\n",
+            "Epoch 15, Loss: 159.17140622558594\n",
+            "Epoch 16, Loss: 159.13776899414063\n",
+            "Epoch 17, Loss: 159.16743734130858\n",
+            "Epoch 18, Loss: 159.16039682617188\n",
+            "Epoch 19, Loss: 159.15671923828126\n",
+            "Epoch 20, Loss: 159.16064890136718\n",
+            "Epoch 21, Loss: 159.16218267822265\n",
+            "Epoch 22, Loss: 159.14670158691408\n",
+            "Epoch 23, Loss: 159.14755837402345\n",
+            "Epoch 24, Loss: 159.14663708496093\n",
+            "Epoch 25, Loss: 159.13332612304688\n",
+            "Epoch 26, Loss: 159.14984946289061\n",
+            "Epoch 27, Loss: 159.14359639892578\n",
+            "Epoch 28, Loss: 159.12746208496094\n",
+            "Epoch 29, Loss: 159.14003862304688\n",
+            "Epoch 30, Loss: 159.1321266479492\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [],
+      "metadata": {
+        "id": "JWtPT0ke6oHP"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Plot the results"
+      ],
+      "metadata": {
+        "id": "gUJJBTbl-6up"
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import torch\n",
+        "import matplotlib.pyplot as plt\n",
+        "\n",
+        "def plot_reconstructions(model, data_loader, num_images=10):\n",
+        "    model.eval()\n",
+        "    with torch.no_grad():\n",
+        "        data_iter = iter(data_loader)\n",
+        "        original_images, _ = next(data_iter)\n",
+        "        original_images = original_images[:num_images]\n",
+        "\n",
+        "        input_images = original_images.view(-1, 28*28)\n",
+        "        reconstructions, _ = model(input_images)\n",
+        "        reconstructions = reconstructions.view(-1, 1, 28, 28)\n",
+        "\n",
+        "        # Plot original and reconstructed images\n",
+        "        fig, axes = plt.subplots(2, num_images, figsize=(num_images * 2, 4))\n",
+        "        for i in range(num_images):\n",
+        "            axes[0, i].imshow(original_images[i].squeeze(), cmap='gray')\n",
+        "            axes[0, i].set_title(\"Original\")\n",
+        "            axes[0, i].axis('off')\n",
+        "\n",
+        "            axes[1, i].imshow(reconstructions[i].squeeze(), cmap='gray')\n",
+        "            axes[1, i].set_title(\"Reconstructed\")\n",
+        "            axes[1, i].axis('off')\n",
+        "\n",
+        "        plt.tight_layout()\n",
+        "        plt.show()\n",
+        "\n",
+        "# Load the dataset\n",
+        "data = np.load('shapes_dataset.npz')\n",
+        "X_train, X_test = data['X_train'], data['X_test']\n",
+        "\n",
+        "# Convert to PyTorch tensors\n",
+        "X_train_tensor = torch.tensor(X_train, dtype=torch.float32).unsqueeze(1)\n",
+        "X_test_tensor = torch.tensor(X_test, dtype=torch.float32).unsqueeze(1)\n",
+        "\n",
+        "# Create DataLoader\n",
+        "batch_size = 64\n",
+        "test_loader = DataLoader(TensorDataset(X_test_tensor, X_test_tensor), batch_size=batch_size, shuffle=False)\n",
+        "\n",
+        "# Plot reconstructions\n",
+        "plot_reconstructions(model, test_loader, num_images=10)\n"
+      ],
+      "metadata": {
+        "id": "GPlOJgYf-7w8"
+      },
+      "execution_count": null,
+      "outputs": []
+    },
+    {
+      "cell_type": "code",
+      "source": [],
+      "metadata": {
+        "id": "hebPQLzV-8da"
+      },
+      "execution_count": null,
+      "outputs": []
+    }
+  ]
+}
